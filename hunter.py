@@ -189,26 +189,26 @@ def main():
         response = compute_client.launch_instance(launch_instance_details=launch_instance_details)
         instance = response.data
         
-        # 7. Poll for Public IP allocation (allocated asynchronously)
-        print("Waiting for Public IP assignment (max 60s)...")
-        import time
+        # 7. Try to fetch Public IP (retrying up to 5 times)
+        print("Fetching Public IP address...")
         public_ip = "Allocating..."
-        for _ in range(12):
-            time.sleep(5)
+        import time
+        for i in range(5):
             try:
                 attachments = compute_client.list_vnic_attachments(
                     compartment_id=compartment_ocid,
                     instance_id=instance.id
                 ).data
-                if attachments and attachments[0].lifecycle_state == "ATTACHED":
+                if attachments:
                     vnic_id = attachments[0].vnic_id
                     vnic = vcn_client.get_vnic(vnic_id=vnic_id).data
                     if vnic.public_ip:
                         public_ip = vnic.public_ip
                         break
             except Exception as e:
-                print(f"Waiting for VNIC attachment: {e}")
-
+                print(f"Attempt {i+1}: Error fetching VNIC details: {e}")
+            time.sleep(3)
+        
         success_msg = (
             f"🚀 *ORACLE CLOUD - VM CREATED SUCCESSFULLY*\n"
             f"──────────────────────────────\n"
@@ -222,9 +222,9 @@ def main():
             f"• *Boot Volume:* `150 GB`\n\n"
             f"💿 *Operating System:*\n"
             f"• *Image:* `{target_image.display_name}`\n"
-            f"──────────────────────────────\n"
-            f"💻 *SSH command:*\n"
-            f"`ssh -i <your_private_key> ubuntu@{public_ip}`\n"
+            f"• *Username:* `ubuntu`\n\n"
+            f"🔑 *SSH Connection:*\n"
+            f"`ssh ubuntu@{public_ip}`\n"
             f"──────────────────────────────\n"
             f"🔗 [Access OCI Console](https://cloud.oracle.com/?region={region})"
         )
