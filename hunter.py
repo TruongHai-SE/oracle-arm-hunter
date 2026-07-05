@@ -41,7 +41,14 @@ def main():
     if not private_key_pem: missing_params.append("OCI_PRIVATE_KEY")
 
     if missing_params:
-        error_msg = f"❌ *OCI Hunter - Configuration Error*\n\nMissing variables: {', '.join(missing_params)}"
+        error_msg = (
+            f"⚠️ *ORACLE CLOUD HUNTER - CONFIGURATION ERROR*\n"
+            f"──────────────────────────────\n"
+            f"❌ *Missing Variables:*\n"
+            + "\n".join([f"• `{param}`" for param in missing_params]) + "\n"
+            f"──────────────────────────────\n"
+            f"⚙️ *Action Required:* Please add these secrets in your GitHub Repository settings."
+        )
         print(error_msg)
         send_telegram(error_msg, telegram_token, telegram_chat_id)
         sys.exit(1)
@@ -183,15 +190,19 @@ def main():
         instance = response.data
         
         success_msg = (
-            f"🎉 *OCI Hunter - VM Created Successfully!*\n\n"
-            f"• *Name*: `{instance.display_name}`\n"
-            f"• *ID*: `{instance.id}`\n"
-            f"• *State*: `{instance.lifecycle_state}`\n"
-            f"• *Shape*: `{instance.shape}` (2 OCPUs, 12GB RAM)\n"
-            f"• *Region*: `{region}`\n"
-            f"• *Image*: `{target_image.display_name}`\n"
-            f"• *Created At*: `{instance.time_created}`\n\n"
-            f"Go to your OCI Console to view deployment details."
+            f"🚀 *ORACLE CLOUD - VM CREATED SUCCESSFULLY*\n"
+            f"──────────────────────────────\n"
+            f"🟢 *Status:* `{instance.lifecycle_state}`\n"
+            f"🖥️ *Instance Name:* `{instance.display_name}`\n"
+            f"🌐 *Region:* `{region}`\n\n"
+            f"📦 *Hardware Configuration:*\n"
+            f"• *Shape:* `{instance.shape}`\n"
+            f"• *Resources:* `2 OCPUs` / `12 GB RAM`\n"
+            f"• *Boot Volume:* `150 GB`\n\n"
+            f"💿 *Operating System:*\n"
+            f"• *Image:* `{target_image.display_name}`\n"
+            f"──────────────────────────────\n"
+            f"🔗 [Access OCI Console](https://cloud.oracle.com/?region={region})"
         )
         print("SUCCESS: VM has been created!")
         print(success_msg)
@@ -207,17 +218,27 @@ def main():
         else:
             # Report actual failures (like auth issues, quota issues, wrong config)
             err_msg = (
-                f"❌ *OCI Hunter - Service Error*\n\n"
-                f"• *Status*: `{e.status}`\n"
-                f"• *Code*: `{e.code}`\n"
-                f"• *Message*: {e.message}\n"
+                f"⚠️ *ORACLE CLOUD HUNTER - SERVICE ERROR*\n"
+                f"──────────────────────────────\n"
+                f"🚫 *Status:* `{e.status}`\n"
+                f"🔑 *Code:* `{e.code}`\n"
+                f"💬 *Message:* `{e.message}`\n"
+                f"──────────────────────────────\n"
+                f"⚙️ *Action Required:* Please review your compartment permissions or quota configuration."
             )
             print(f"ServiceError: {err_msg}")
             send_telegram(err_msg, telegram_token, telegram_chat_id)
             sys.exit(1)
 
     except Exception as e:
-        err_msg = f"❌ *OCI Hunter - Critical Failure*\n\nAn unexpected error occurred:\n```\n{str(e)}\n```"
+        err_msg = (
+            f"❌ *ORACLE CLOUD HUNTER - CRITICAL FAILURE*\n"
+            f"──────────────────────────────\n"
+            f"🚨 *An unexpected error occurred:*\n"
+            f"```\n{str(e)}\n```\n"
+            f"──────────────────────────────\n"
+            f"⚙️ *Action Required:* Inspect the GitHub Actions runner log to diagnose."
+        )
         print(err_msg)
         send_telegram(err_msg, telegram_token, telegram_chat_id)
         sys.exit(1)
