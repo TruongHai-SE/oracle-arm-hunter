@@ -51,7 +51,7 @@ When the instance is successfully created, you will receive a Telegram message f
 • Boot Volume: 150 GB
 
 💿 Operating System:
-• Image: Canonical-Ubuntu-24.04-aarch64
+• Image: Canonical-Ubuntu-24.04-Minimal-aarch64
 • Username: ubuntu
 
 🔑 SSH Connection:
