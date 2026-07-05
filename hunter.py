@@ -89,7 +89,12 @@ def main():
                 vcn_id = v.id
                 break
         if not vcn_id:
-            raise Exception("VCN 'hari-network' not found in your compartment. Make sure the VCN exists.")
+            available_vcns = [v.display_name for v in vcns]
+            print(f"Available VCNs in this compartment: {available_vcns}")
+            raise Exception(
+                f"VCN 'hari-network' not found in your compartment. "
+                f"Found VCNs: {available_vcns}. Make sure the VCN is in the correct compartment and the compartment OCID is correct."
+            )
 
         # 3. Find Subnet by name: "public subnet-hari-network"
         print("Finding Subnet 'public subnet-hari-network'...")
@@ -100,7 +105,12 @@ def main():
                 subnet_id = s.id
                 break
         if not subnet_id:
-            raise Exception("Subnet 'public subnet-hari-network' not found in VCN 'hari-network'.")
+            available_subnets = [s.display_name for s in subnets]
+            print(f"Available Subnets in VCN 'hari-network': {available_subnets}")
+            raise Exception(
+                f"Subnet 'public subnet-hari-network' not found in VCN 'hari-network'. "
+                f"Found Subnets: {available_subnets}."
+            )
 
         # 4. Search for canonical Ubuntu 24.04 Minimal aarch64 image
         print("Searching for Ubuntu 24.04 Minimal aarch64 image...")
