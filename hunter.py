@@ -84,33 +84,35 @@ def main():
         print("Finding VCN 'hari-network'...")
         vcns = vcn_client.list_vcns(compartment_id=compartment_ocid).data
         vcn_id = None
+        target_network_compartment_id = compartment_ocid
         for v in vcns:
             if v.display_name == "hari-network":
                 vcn_id = v.id
                 break
+
+        # Fallback to Tenancy (Root) compartment if not found in target compartment
+        if not vcn_id and compartment_ocid != tenancy_ocid:
+            print("VCN 'hari-network' not found in the specified compartment. Searching in Tenancy (Root)...")
+            vcns = vcn_client.list_vcns(compartment_id=tenancy_ocid).data
+            for v in vcns:
+                if v.display_name == "hari-network":
+                    vcn_id = v.id
+                    target_network_compartment_id = tenancy_ocid
+                    break
+
         if not vcn_id:
-            available_vcns = [v.display_name for v in vcns]
-            print(f"Available VCNs in this compartment: {available_vcns}")
-            raise Exception(
-                f"VCN 'hari-network' not found in your compartment. "
-                f"Found VCNs: {available_vcns}. Make sure the VCN is in the correct compartment and the compartment OCID is correct."
-            )
+            raise Exception("VCN 'hari-network' not found in your compartment or Root compartment. Make sure the VCN exists.")
 
         # 3. Find Subnet by name: "public subnet-hari-network"
         print("Finding Subnet 'public subnet-hari-network'...")
-        subnets = vcn_client.list_subnets(compartment_id=compartment_ocid, vcn_id=vcn_id).data
+        subnets = vcn_client.list_subnets(compartment_id=target_network_compartment_id, vcn_id=vcn_id).data
         subnet_id = None
         for s in subnets:
             if s.display_name == "public subnet-hari-network":
                 subnet_id = s.id
                 break
         if not subnet_id:
-            available_subnets = [s.display_name for s in subnets]
-            print(f"Available Subnets in VCN 'hari-network': {available_subnets}")
-            raise Exception(
-                f"Subnet 'public subnet-hari-network' not found in VCN 'hari-network'. "
-                f"Found Subnets: {available_subnets}."
-            )
+            raise Exception("Subnet 'public subnet-hari-network' not found in VCN 'hari-network'.")
 
         # 4. Search for canonical Ubuntu 24.04 Minimal aarch64 image
         print("Searching for Ubuntu 24.04 Minimal aarch64 image...")
