@@ -189,18 +189,42 @@ def main():
         response = compute_client.launch_instance(launch_instance_details=launch_instance_details)
         instance = response.data
         
+        # 7. Poll for Public IP allocation (allocated asynchronously)
+        print("Waiting for Public IP assignment (max 60s)...")
+        import time
+        public_ip = "Allocating..."
+        for _ in range(12):
+            time.sleep(5)
+            try:
+                attachments = compute_client.list_vnic_attachments(
+                    compartment_id=compartment_ocid,
+                    instance_id=instance.id
+                ).data
+                if attachments and attachments[0].lifecycle_state == "ATTACHED":
+                    vnic_id = attachments[0].vnic_id
+                    vnic = vcn_client.get_vnic(vnic_id=vnic_id).data
+                    if vnic.public_ip:
+                        public_ip = vnic.public_ip
+                        break
+            except Exception as e:
+                print(f"Waiting for VNIC attachment: {e}")
+
         success_msg = (
             f"🚀 *ORACLE CLOUD - VM CREATED SUCCESSFULLY*\n"
             f"──────────────────────────────\n"
             f"🟢 *Status:* `{instance.lifecycle_state}`\n"
             f"🖥️ *Instance Name:* `{instance.display_name}`\n"
-            f"🌐 *Region:* `{region}`\n\n"
+            f"🌐 *Region:* `{region}`\n"
+            f"🌐 *Public IP:* `{public_ip}`\n\n"
             f"📦 *Hardware Configuration:*\n"
             f"• *Shape:* `{instance.shape}`\n"
             f"• *Resources:* `2 OCPUs` / `12 GB RAM`\n"
             f"• *Boot Volume:* `150 GB`\n\n"
             f"💿 *Operating System:*\n"
             f"• *Image:* `{target_image.display_name}`\n"
+            f"──────────────────────────────\n"
+            f"💻 *SSH command:*\n"
+            f"`ssh -i <your_private_key> ubuntu@{public_ip}`\n"
             f"──────────────────────────────\n"
             f"🔗 [Access OCI Console](https://cloud.oracle.com/?region={region})"
         )
