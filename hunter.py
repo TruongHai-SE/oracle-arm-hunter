@@ -234,13 +234,37 @@ def main():
 
     except oci.exceptions.ServiceError as e:
         error_str = str(e).lower()
-        # Filter for typical capacity errors
-        is_capacity = any(phrase in error_str for phrase in ["out of capacity", "limitexceeded", "capacity", "too many requests"])
+        
+        # Check if it's a tenancy limit/quota issue
+        is_limit_exceeded = "limitexceeded" in error_str or "limit exceeded" in error_str
+        
+        # Filter for typical physical host capacity errors
+        is_capacity = (
+            any(phrase in error_str for phrase in ["out of capacity", "capacity", "too many requests"])
+            and not is_limit_exceeded
+        )
         
         if is_capacity:
             print("Out of capacity at AD-1. Request ignored silently.")
+        elif is_limit_exceeded:
+            err_msg = (
+                f"⚠️ *ORACLE CLOUD HUNTER - LIMIT EXCEEDED*\n"
+                f"──────────────────────────────\n"
+                f"🚫 *Status:* `{e.status}`\n"
+                f"🔑 *Code:* `{e.code}`\n"
+                f"💬 *Message:* `{e.message}`\n"
+                f"──────────────────────────────\n"
+                f"🚨 *Explanation:* Your account quota or service limit has been exceeded.\n"
+                f"• Please check your OCI Console -> Limits, Quotas and Usage.\n"
+                f"• Ensure you haven't reached the 200 GB Always-Free boot volume limit.\n"
+                f"• Ensure your account has remaining ARM OCPU/RAM quota.\n"
+                f"⚙️ *Action Required:* The hunter script has stopped. Please resolve your tenancy limits."
+            )
+            print(f"LimitExceeded: {err_msg}")
+            send_telegram(err_msg, telegram_token, telegram_chat_id)
+            sys.exit(1)
         else:
-            # Report actual failures (like auth issues, quota issues, wrong config)
+            # Report other actual failures (like auth issues, wrong config)
             err_msg = (
                 f"⚠️ *ORACLE CLOUD HUNTER - SERVICE ERROR*\n"
                 f"──────────────────────────────\n"
@@ -248,7 +272,7 @@ def main():
                 f"🔑 *Code:* `{e.code}`\n"
                 f"💬 *Message:* `{e.message}`\n"
                 f"──────────────────────────────\n"
-                f"⚙️ *Action Required:* Please review your compartment permissions or quota configuration."
+                f"⚙️ *Action Required:* Please review your compartment permissions or configuration."
             )
             print(f"ServiceError: {err_msg}")
             send_telegram(err_msg, telegram_token, telegram_chat_id)
