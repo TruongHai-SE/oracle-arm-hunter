@@ -1,9 +1,13 @@
 name: Oracle Cloud ARM VM Hunter
 
 on:
-  schedule:
-    - cron: '*/5 * * * *' # Run every 5 minutes
-  workflow_dispatch: # Allow manual triggering for testing
+  # schedule:
+  #   - cron: '*/5 * * * *' # Managed by Cloudflare Worker cron to prevent duplicate triggers
+  workflow_dispatch: # Allow manual or Cloudflare Worker triggering
+
+concurrency:
+  group: oci-arm-hunter
+  cancel-in-progress: false
 
 jobs:
   hunt:
