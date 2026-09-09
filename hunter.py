@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import tempfile
 import requests
 import oci
@@ -72,6 +73,14 @@ def main():
         identity_client = oci.identity.IdentityClient(config)
         compute_client = oci.core.ComputeClient(config)
         vcn_client = oci.core.VirtualNetworkClient(config)
+
+        # Check if target instance already exists and is active
+        print("Checking if 'hari-VM' is already running...")
+        existing_instances = compute_client.list_instances(compartment_id=compartment_ocid).data
+        for inst in existing_instances:
+            if inst.display_name == "hari-VM" and inst.lifecycle_state in ["PROVISIONING", "RUNNING", "STARTING"]:
+                print(f"Target instance 'hari-VM' already exists with state '{inst.lifecycle_state}'. Target achieved, nothing to hunt.")
+                return
 
         # 1. Fetch Availability Domain (AD-1)
         print("Fetching Availability Domains...")
@@ -184,69 +193,146 @@ def main():
             }
         )
 
-        # 6. Call Launch API
-        print("Launching instance...")
-        response = compute_client.launch_instance(launch_instance_details=launch_instance_details)
-        instance = response.data
+        # 6. Hunting Loop with backoff & retry
+        max_runtime = int(os.environ.get("HUNTER_MAX_RUNTIME", 240))  # Run up to 4 minutes per workflow
+        retry_delay = int(os.environ.get("HUNTER_RETRY_DELAY", 25))    # 25 seconds interval (safe, non-spam)
+        rate_limit_delay = 45                                          # Backoff on 429 TooManyRequests
         
-        # 7. Try to fetch Public IP (retrying up to 5 times)
-        print("Fetching Public IP address...")
-        public_ip = "Allocating..."
-        import time
-        for i in range(5):
+        start_time = time.time()
+        attempt = 0
+        instance = None
+
+        print(f"Starting hunting loop (max {max_runtime}s, {retry_delay}s interval)...")
+
+        while True:
+            attempt += 1
+            elapsed = time.time() - start_time
+            if elapsed >= max_runtime:
+                print(f"Workflow hunting window ({max_runtime}s) reached after {attempt - 1} attempts. Handing over to next cycle.")
+                break
+
+            print(f"[{time.strftime('%H:%M:%S')}] Attempt #{attempt}: Requesting VM launch...")
             try:
-                attachments = compute_client.list_vnic_attachments(
-                    compartment_id=compartment_ocid,
-                    instance_id=instance.id
-                ).data
-                if attachments:
-                    vnic_id = attachments[0].vnic_id
-                    vnic = vcn_client.get_vnic(vnic_id=vnic_id).data
-                    if vnic.public_ip:
-                        public_ip = vnic.public_ip
+                response = compute_client.launch_instance(launch_instance_details=launch_instance_details)
+                instance = response.data
+                print(f"SUCCESS: Instance launched! ID: {instance.id}")
+                break
+            except oci.exceptions.ServiceError as e:
+                error_str = str(e).lower()
+                e_code = (e.code or "").lower()
+
+                # Check if it's a tenancy limit/quota issue (FATAL)
+                is_limit_exceeded = "limitexceeded" in e_code or "limit exceeded" in error_str
+
+                # Check if it's OCI rate limit (HTTP 429)
+                is_rate_limit = e.status == 429 or "toomanyrequests" in e_code or "too many requests" in error_str
+
+                # Filter for typical physical host capacity errors (RETRYABLE)
+                is_capacity = (
+                    e.status == 500 or
+                    "outofhostcapacity" in e_code or
+                    any(phrase in error_str for phrase in ["out of capacity", "out of host capacity", "capacity"])
+                ) and not is_limit_exceeded and not is_rate_limit
+
+                if is_capacity:
+                    print(f"[{time.strftime('%H:%M:%S')}] Attempt #{attempt}: Out of capacity at AD-1. Request ignored silently.")
+                    remaining = max_runtime - (time.time() - start_time)
+                    if remaining < retry_delay:
+                        print(f"Hunting window ending ({remaining:.1f}s remaining < {retry_delay}s). Exiting cleanly for next cycle.")
                         break
+                    time.sleep(retry_delay)
+                elif is_rate_limit:
+                    print(f"[{time.strftime('%H:%M:%S')}] Attempt #{attempt}: OCI Rate Limit hit (429). Backing off for {rate_limit_delay}s...")
+                    remaining = max_runtime - (time.time() - start_time)
+                    if remaining < rate_limit_delay:
+                        break
+                    time.sleep(rate_limit_delay)
+                elif is_limit_exceeded:
+                    err_msg = (
+                        f"⚠️ *ORACLE CLOUD HUNTER - LIMIT EXCEEDED*\n"
+                        f"──────────────────────────────\n"
+                        f"🚫 *Status:* `{e.status}`\n"
+                        f"🔑 *Code:* `{e.code}`\n"
+                        f"💬 *Message:* `{e.message}`\n"
+                        f"──────────────────────────────\n"
+                        f"🚨 *Explanation:* Your account quota or service limit has been exceeded.\n"
+                        f"• Please check your OCI Console -> Limits, Quotas and Usage.\n"
+                        f"• Ensure you haven't reached the 200 GB Always-Free boot volume limit.\n"
+                        f"• Ensure your account has remaining ARM OCPU/RAM quota.\n"
+                        f"⚙️ *Action Required:* The hunter script has stopped. Please resolve your tenancy limits."
+                    )
+                    print(f"LimitExceeded: {err_msg}")
+                    send_telegram(err_msg, telegram_token, telegram_chat_id)
+                    sys.exit(1)
+                else:
+                    # Report other actual failures (like auth issues, wrong config)
+                    err_msg = (
+                        f"⚠️ *ORACLE CLOUD HUNTER - SERVICE ERROR*\n"
+                        f"──────────────────────────────\n"
+                        f"🚫 *Status:* `{e.status}`\n"
+                        f"🔑 *Code:* `{e.code}`\n"
+                        f"💬 *Message:* `{e.message}`\n"
+                        f"──────────────────────────────\n"
+                        f"⚙️ *Action Required:* Please review your compartment permissions or configuration."
+                    )
+                    print(f"ServiceError: {err_msg}")
+                    send_telegram(err_msg, telegram_token, telegram_chat_id)
+                    sys.exit(1)
             except Exception as e:
-                print(f"Attempt {i+1}: Error fetching VNIC details: {e}")
-            time.sleep(3)
-        
-        success_msg = (
-            f"🚀 *ORACLE CLOUD - VM CREATED SUCCESSFULLY*\n"
-            f"──────────────────────────────\n"
-            f"🟢 *Status:* `{instance.lifecycle_state}`\n"
-            f"🖥️ *Instance Name:* `{instance.display_name}`\n"
-            f"🌐 *Region:* `{region}`\n"
-            f"🌐 *Public IP:* `{public_ip}`\n\n"
-            f"📦 *Hardware Configuration:*\n"
-            f"• *Shape:* `{instance.shape}`\n"
-            f"• *Resources:* `2 OCPUs` / `12 GB RAM`\n"
-            f"• *Boot Volume:* `150 GB`\n\n"
-            f"💿 *Operating System:*\n"
-            f"• *Image:* `{target_image.display_name}`\n"
-            f"• *Username:* `ubuntu`\n\n"
-            f"🔑 *SSH Connection:*\n"
-            f"`ssh ubuntu@{public_ip}`\n"
-            f"──────────────────────────────\n"
-            f"🔗 [Access OCI Console](https://cloud.oracle.com/?region={region})"
-        )
-        print("SUCCESS: VM has been created!")
-        print(success_msg)
-        send_telegram(success_msg, telegram_token, telegram_chat_id)
+                # Transient network error during launch call
+                print(f"[{time.strftime('%H:%M:%S')}] Attempt #{attempt}: Transient connection error during launch: {e}")
+                remaining = max_runtime - (time.time() - start_time)
+                if remaining < retry_delay:
+                    break
+                time.sleep(retry_delay)
+
+        # 7. Try to fetch Public IP (if VM was successfully created)
+        if instance:
+            print("Fetching Public IP address...")
+            public_ip = "Allocating..."
+            for i in range(8):
+                try:
+                    attachments = compute_client.list_vnic_attachments(
+                        compartment_id=compartment_ocid,
+                        instance_id=instance.id
+                    ).data
+                    if attachments:
+                        vnic_id = attachments[0].vnic_id
+                        vnic = vcn_client.get_vnic(vnic_id=vnic_id).data
+                        if vnic.public_ip:
+                            public_ip = vnic.public_ip
+                            break
+                except Exception as e:
+                    print(f"Attempt {i+1}: Error fetching VNIC details: {e}")
+                time.sleep(3)
+
+            success_msg = (
+                f"🚀 *ORACLE CLOUD - VM CREATED SUCCESSFULLY*\n"
+                f"──────────────────────────────\n"
+                f"🟢 *Status:* `{instance.lifecycle_state}`\n"
+                f"🖥️ *Instance Name:* `{instance.display_name}`\n"
+                f"🌐 *Region:* `{region}`\n"
+                f"🌐 *Public IP:* `{public_ip}`\n\n"
+                f"📦 *Hardware Configuration:*\n"
+                f"• *Shape:* `{instance.shape}`\n"
+                f"• *Resources:* `2 OCPUs` / `12 GB RAM`\n"
+                f"• *Boot Volume:* `150 GB`\n\n"
+                f"💿 *Operating System:*\n"
+                f"• *Image:* `{target_image.display_name}`\n"
+                f"• *Username:* `ubuntu`\n\n"
+                f"🔑 *SSH Connection:*\n"
+                f"`ssh ubuntu@{public_ip}`\n"
+                f"──────────────────────────────\n"
+                f"🔗 [Access OCI Console](https://cloud.oracle.com/?region={region})"
+            )
+            print("SUCCESS: VM has been created!")
+            print(success_msg)
+            send_telegram(success_msg, telegram_token, telegram_chat_id)
 
     except oci.exceptions.ServiceError as e:
         error_str = str(e).lower()
-        
-        # Check if it's a tenancy limit/quota issue
         is_limit_exceeded = "limitexceeded" in error_str or "limit exceeded" in error_str
-        
-        # Filter for typical physical host capacity errors
-        is_capacity = (
-            any(phrase in error_str for phrase in ["out of capacity", "capacity", "too many requests"])
-            and not is_limit_exceeded
-        )
-        
-        if is_capacity:
-            print("Out of capacity at AD-1. Request ignored silently.")
-        elif is_limit_exceeded:
+        if is_limit_exceeded:
             err_msg = (
                 f"⚠️ *ORACLE CLOUD HUNTER - LIMIT EXCEEDED*\n"
                 f"──────────────────────────────\n"
@@ -264,7 +350,6 @@ def main():
             send_telegram(err_msg, telegram_token, telegram_chat_id)
             sys.exit(1)
         else:
-            # Report other actual failures (like auth issues, wrong config)
             err_msg = (
                 f"⚠️ *ORACLE CLOUD HUNTER - SERVICE ERROR*\n"
                 f"──────────────────────────────\n"
