@@ -21,6 +21,17 @@ def send_telegram(message, token, chat_id):
     except Exception as e:
         print(f"Failed to send Telegram notification: {e}")
 
+def retry_call(api_func, *args, max_retries=3, delay=5, **kwargs):
+    """Retries a transient API call up to max_retries times before raising."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            return api_func(*args, **kwargs)
+        except Exception as e:
+            if attempt == max_retries:
+                raise e
+            print(f"Transient network issue during setup ({e}). Retrying ({attempt}/{max_retries}) in {delay}s...")
+            time.sleep(delay)
+
 def main():
     # Load settings from environment variables
     user_ocid = os.environ.get("OCI_USER_OCID")
@@ -69,14 +80,21 @@ def main():
     }
 
     try:
-        # Initialize clients
+        # Initialize clients with resilient timeouts (30s connect, 60s read)
+        # Prevents premature ConnectTimeoutError due to international latency spikes
+        timeout_config = (30.0, 60.0)
         identity_client = oci.identity.IdentityClient(config)
+        identity_client.base_client.timeout = timeout_config
+
         compute_client = oci.core.ComputeClient(config)
+        compute_client.base_client.timeout = timeout_config
+
         vcn_client = oci.core.VirtualNetworkClient(config)
+        vcn_client.base_client.timeout = timeout_config
 
         # Check if target instance already exists and is active
         print("Checking if 'hari-VM' is already running...")
-        existing_instances = compute_client.list_instances(compartment_id=compartment_ocid).data
+        existing_instances = retry_call(compute_client.list_instances, compartment_id=compartment_ocid).data
         for inst in existing_instances:
             if inst.display_name == "hari-VM" and inst.lifecycle_state in ["PROVISIONING", "RUNNING", "STARTING"]:
                 print(f"Target instance 'hari-VM' already exists with state '{inst.lifecycle_state}'. Target achieved, nothing to hunt.")
@@ -84,7 +102,7 @@ def main():
 
         # 1. Fetch Availability Domain (AD-1)
         print("Fetching Availability Domains...")
-        ads = identity_client.list_availability_domains(compartment_id=compartment_ocid).data
+        ads = retry_call(identity_client.list_availability_domains, compartment_id=compartment_ocid).data
         ad_name = None
         for ad in ads:
             if "ad-1" in ad.name.lower():
@@ -98,7 +116,7 @@ def main():
 
         # 2. Find VCN by name: "hari-network"
         print("Finding VCN 'hari-network'...")
-        vcns = vcn_client.list_vcns(compartment_id=compartment_ocid).data
+        vcns = retry_call(vcn_client.list_vcns, compartment_id=compartment_ocid).data
         vcn_id = None
         target_network_compartment_id = compartment_ocid
         for v in vcns:
@@ -109,7 +127,7 @@ def main():
         # Fallback to Tenancy (Root) compartment if not found in target compartment
         if not vcn_id and compartment_ocid != tenancy_ocid:
             print("VCN 'hari-network' not found in the specified compartment. Searching in Tenancy (Root)...")
-            vcns = vcn_client.list_vcns(compartment_id=tenancy_ocid).data
+            vcns = retry_call(vcn_client.list_vcns, compartment_id=tenancy_ocid).data
             for v in vcns:
                 if v.display_name == "hari-network":
                     vcn_id = v.id
@@ -121,7 +139,7 @@ def main():
 
         # 3. Find Subnet by name: "public subnet-hari-network"
         print("Finding Subnet 'public subnet-hari-network'...")
-        subnets = vcn_client.list_subnets(compartment_id=target_network_compartment_id, vcn_id=vcn_id).data
+        subnets = retry_call(vcn_client.list_subnets, compartment_id=target_network_compartment_id, vcn_id=vcn_id).data
         subnet_id = None
         for s in subnets:
             if s.display_name == "public subnet-hari-network":
@@ -132,7 +150,8 @@ def main():
 
         # 4. Search for canonical Ubuntu 24.04 Minimal aarch64 image
         print("Searching for Ubuntu 24.04 Minimal aarch64 image...")
-        images = compute_client.list_images(
+        images = retry_call(
+            compute_client.list_images,
             compartment_id=compartment_ocid,
             shape="VM.Standard.A1.Flex"
         ).data
